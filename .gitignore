@@ -29,7 +29,7 @@ share/python-wheels/
 MANIFEST
 
 # Environments
-.env
+backend/*.env*
 .venv
 env/
 venv/

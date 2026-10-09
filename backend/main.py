@@ -8,8 +8,17 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="CodeSentinel AI API")
+
+# Configure Gemini
+api_key = os.getenv("GEMINI_API_KEY")
+if api_key:
+    genai.configure(api_key=api_key)
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -95,32 +104,52 @@ def run_ruff(code: str) -> List[dict]:
             os.remove(temp_path)
 
 def generate_ai_explanation(code: str, issues: List[dict], language: str, analysis_type: str) -> tuple[str, str, str]:
-    # Placeholder for real LLM API call
+    if not os.getenv("GEMINI_API_KEY"):
+        return ("⚠️ GEMINI_API_KEY is not set. Please create a .env file in the backend directory and add your key.", code, "Time: N/A | Space: N/A")
+
     focus = {
-        "default": "general bugs and best practices",
-        "performance": "time complexity and execution speed optimization",
+        "default": "general bugs, logic errors, and best practices",
+        "performance": "time complexity, memory usage, and execution speed optimization",
         "security": "vulnerabilities and secure coding practices",
         "readability": "clean code, naming conventions, and documentation"
     }.get(analysis_type, "general improvements")
 
-    explanation = f"Analyzing {language} code focusing on {focus}.\n\n"
+    prompt = f"""
+You are an expert software engineer performing a code review.
+Review this {language} code focusing on {focus}.
+
+Original Code:
+```{language}
+{code}
+```
+
+Static Analysis Issues (if any):
+{json.dumps(issues)}
+
+Please provide your response in exactly the following JSON format:
+{{
+  "explanation": "A detailed explanation of the issues and how to fix them.",
+  "corrected_code": "The fully corrected and optimized code.",
+  "complexity": "Estimated time and space complexity, e.g., Time: O(N) | Space: O(1)"
+}}
+Ensure the output is valid JSON without any markdown formatting wrappers like ```json.
+"""
     
-    if issues:
-        issue_list = "\n".join([f"- Line {i['line']}: {i['message']}" for i in issues])
-        explanation += f"Static Analysis found {len(issues)} issue(s):\n{issue_list}\n\n"
-        explanation += "AI Suggestion: I recommend addressing these linting errors first to ensure baseline stability."
-    else:
-        explanation += "Static Analysis passed successfully. The AI review suggests the logic is generally sound but can be enhanced."
+    try:
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        response = model.generate_content(prompt)
+        text = response.text.strip()
         
-    corrected = code + f"\n\n/* AI Suggestion: Refactored for better {focus} */"
-    if language.lower() == "python":
-        corrected = code + f"\n\n# AI Suggestion: Refactored for better {focus}"
-        
-    complexity = "Time: O(N) | Space: O(1)"
-    if analysis_type == "performance":
-        complexity = "Optimized Time: O(log N) | Space: O(1)"
-        
-    return explanation, corrected, complexity
+        # Strip potential markdown formatting if the model still includes it
+        if text.startswith('```json'):
+            text = text[7:-3].strip()
+        elif text.startswith('```'):
+            text = text[3:-3].strip()
+            
+        data = json.loads(text)
+        return data.get("explanation", "No explanation provided."), data.get("corrected_code", code), data.get("complexity", "Unknown")
+    except Exception as e:
+        return (f"Failed to generate AI analysis: {str(e)}", code, "Time: Error | Space: Error")
 
 @app.post("/api/inspect", response_model=InspectionResponse)
 def inspect_code(request: CodeRequest):
